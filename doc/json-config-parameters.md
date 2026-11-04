@@ -545,3 +545,48 @@ but options specified for individual scenes override these options. The
 the scene ID for the first scene to be displayed. The `scenes` property
 contains a dictionary of scenes, specified by scene IDs. The values assigned to
 these IDs are specific to each scene.
+
+### `vrMode` (boolean, default `false`)
+Enables a monoscopic glasses / Cardboard prototype. One viewer and WebGL canvas
+render the same camera and panorama into two side-by-side eye viewports in each
+frame, sharing textures. `hfov` applies to **each eye**; its projection uses that
+eye's actual drawing-buffer aspect ratio (including display pixel density).
+Requires WebGL; the CSS 3D fallback cannot enable this mode. Landscape is intended,
+but resizing and portrait mode remain supported. No WebXR, binocular depth,
+lens distortion correction, or headset profiles are provided.
+
+### `showVRCtrl` (boolean, default `false`)
+Shows the VR toggle when `showControls` is enabled. The exit button remains visible
+in VR even if controls are disabled. A user click requests fullscreen where
+supported; denial or missing fullscreen support leaves VR working inline.
+Escape or leaving fullscreen exits VR. Programmatic activation does not request
+fullscreen or sensor permission. The existing orientation control / API and iOS
+permission path remain available; obtain permission on a user gesture before
+putting the phone in the headset. HTTPS is required for iPhone sensors.
+
+### `vrOffset` (number, default `0`)
+Symmetric horizontal optical-center displacement as a **fraction of one eye's
+viewport width**, from `-0.25` to `0.25`. For example, `0.05` moves the left image
+center left by 5% of its viewport width and the right image center right by 5%.
+Negative values move centers inward. Uses an off-axis projection, without changing
+camera yaw or texture coordinates, cropping / translating the viewport, or
+stretching the image. It is not an IPD measurement in millimeters. Invalid
+configuration values fall back to zero; invalid API values throw an error.
+
+VR hides all DOM hotspots (including custom hotspots), debug indicators, compass,
+title / author, and normal controls because these overlays are not duplicated per
+eye. They return on exit. Use the persistent Exit VR button or Escape. Configure
+image alignment before entry if fullscreen would hide external adjustment controls.
+
+Viewer API: `setVRMode(boolean)`, `isVRMode()`, `setVROffset(number)`,
+`getVROffset()`. Setters return the viewer; activation before panorama load or
+without WebGL does nothing. `vrmodechange` reports the enabled boolean when
+`setVRMode` is called. See `examples/example-vr.htm` for a runnable example.
+
+To run the example, start `python3 -m http.server 8000` from the repository root
+and open `/examples/example-vr.htm` on that server. For iPhone sensor tests, serve
+it through HTTPS. Click "Sensorsteuerung erlauben" to use the existing iOS
+permission flow, adjust the slider, then click VR. Both mode and button are opt-in.
+Browser regression checks: `python3 tests/vr_test.py` (test-only Playwright,
+Pillow and system Chromium). The existing `tests/run_tests.py` suite remains
+unchanged. No additional browser-side library is used.

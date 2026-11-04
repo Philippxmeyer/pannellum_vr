@@ -479,3 +479,26 @@ div.pnlm-tooltip:hover span:after {
 .pnlm-pointer {
     cursor: pointer;
 }
+
+/* Monoscopic glasses mode: keep only an accessible exit control.
+   Hotspots are DOM overlays and are intentionally not rendered per eye. */
+.pnlm-vr-button {
+    position: absolute;
+    top: 4px;
+    right: 4px;
+    min-width: 44px;
+    min-height: 44px;
+    padding: 6px;
+    font: 14px sans-serif;
+    cursor: pointer;
+    z-index: 3;
+}
+.pnlm-vr-mode .pnlm-controls-container,
+.pnlm-vr-mode .pnlm-hotspot-base,
+.pnlm-vr-mode .pnlm-hot-spot-debug-indicator,
+.pnlm-vr-mode .pnlm-panorama-info,
+.pnlm-vr-mode .pnlm-compass,
+.pnlm-vr-mode .pnlm-about-msg,
+.pnlm-vr-mode .pnlm-fade-img {
+    display: none !important;
+}

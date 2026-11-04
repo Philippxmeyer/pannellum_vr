@@ -759,6 +759,9 @@ function Renderer(container, context) {
             pose = [horizonPitch, horizonRoll];
     };
 
+    /** @returns {boolean} Whether the WebGL split-screen path is available. */
+    this.supportsVR = function() { return !!gl; };
+
     /**
      * Render new view of panorama.
      * @memberof Renderer
@@ -770,6 +773,8 @@ function Renderer(container, context) {
      * @param {number} [params.roll] - Camera roll (in radians).
      * @param {string} [params.returnImage] - Return rendered image? If specified, should be 'ImageBitmap', 'image/jpeg', or 'image/png'.
      * @param {function} [params.hook] - Hook for executing arbitrary function in this environment.
+     * @param {boolean} [params.vrMode] - Draw two monoscopic eye views.
+     * @param {number} [params.vrOffset] - Outward center shift / eye viewport width.
      * @param {boolean} [params.dynamic] - Whether or not the image is dynamic (e.g., video) and should be updated.
      */
     this.render = function(pitch, yaw, hfov, params) {
@@ -858,6 +863,32 @@ function Renderer(container, context) {
             return;
         }
         
+        // One camera / texture update, two synchronous draws. Offset is a
+        // fraction of one eye's width; positive values move centers outward.
+        var vr = params.vrMode === true,
+            eyeWidth = vr ? Math.floor(gl.drawingBufferWidth / 2) : gl.drawingBufferWidth,
+            aspect = eyeWidth / gl.drawingBufferHeight,
+            shift = vr ? 2 * (params.vrOffset || 0) : 0;
+        function drawViews(shader, draw) {
+            for (var eye = 0; eye < (vr ? 2 : 1); eye++) {
+                var width = vr && eye ? gl.drawingBufferWidth - eyeWidth : eyeWidth,
+                    eyeAspect = width / gl.drawingBufferHeight,
+                    center = vr ? (eye ? shift : -shift) : 0;
+                gl.viewport(eye ? eyeWidth : 0, 0, width, gl.drawingBufferHeight);
+                if (shader === program && imageType == 'multires') {
+                    var projection = makePersp(hfov, eyeAspect, 0.1, 100.0);
+                    projection[2] = -center;
+                    gl.uniformMatrix4fv(program.perspUniform, false, transposeMatrix4(projection));
+                } else {
+                    gl.uniform1f(shader.aspectRatio, eyeAspect);
+                    gl.uniform1f(gl.getUniformLocation(shader, 'u_center'), center);
+                    gl.uniform1f(shader.f, eyeAspect / Math.tan(hfov / 2));
+                }
+                draw();
+            }
+            gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+        }
+
         if (imageType != 'multires') {
             // Calculate focal length from vertical field of view
             var vfov = 2 * Math.atan(Math.tan(hfov * 0.5) / (gl.drawingBufferWidth / gl.drawingBufferHeight));
@@ -878,7 +909,7 @@ function Renderer(container, context) {
             }
             
             // Draw using current buffer
-            gl.drawArrays(gl.TRIANGLES, 0, 6);
+            drawViews(program, function() { gl.drawArrays(gl.TRIANGLES, 0, 6); });
         
         } else {
             // Draw SHT hash preview, if needed
@@ -911,7 +942,7 @@ function Renderer(container, context) {
                 gl.uniform1f(previewProgram.f, focal);
 
                 // Draw using current buffer
-                gl.drawArrays(gl.TRIANGLES, 0, 6);
+                drawViews(previewProgram, function() { gl.drawArrays(gl.TRIANGLES, 0, 6); });
 
                 gl.bindBuffer(gl.ARRAY_BUFFER, cubeVertBuf);
                 gl.vertexAttribPointer(program.vertPosLocation, 3, gl.FLOAT, false, 0, 0);
@@ -919,8 +950,12 @@ function Renderer(container, context) {
             }
 
             // Create perspective matrix
-            var perspMatrix = makePersp(hfov, gl.drawingBufferWidth / gl.drawingBufferHeight, 0.1, 100.0);
-            var perspMatrixNoClip = makePersp(hfov, gl.drawingBufferWidth / gl.drawingBufferHeight, -100.0, 100.0);
+            // Conservative union of both off-axis frusta for shared tile selection.
+            var extent = 1 + Math.abs(shift),
+                cullHfov = 2 * Math.atan(Math.tan(hfov / 2) * extent);
+            program.tileViewWidth = eyeWidth * extent;
+            var perspMatrix = makePersp(cullHfov, aspect * extent, 0.1, 100.0);
+            var perspMatrixNoClip = makePersp(cullHfov, aspect * extent, -100.0, 100.0);
             
             // Create rotation matrix
             var matrix = identityMatrix3();
@@ -950,7 +985,7 @@ function Renderer(container, context) {
             
             for (s = 0; s < 6; s++) {
                 var ntmp = new MultiresNode(vtmps[s], sides[s], 1, 0, 0, image.fullpath, null);
-                testMultiresNode(rotPersp, rotPerspNoClip, ntmp, pitch, yaw, hfov);
+                testMultiresNode(rotPersp, rotPerspNoClip, ntmp, pitch, yaw, cullHfov);
             }
             
             program.currentNodes.sort(multiresNodeRenderSort);
@@ -985,7 +1020,9 @@ function Renderer(container, context) {
                 program.textureLoads.shift()(true);
 
             // Draw tiles
-            multiresDraw(!isPreview);
+            if (!isPreview)
+                gl.clear(gl.COLOR_BUFFER_BIT);
+            drawViews(program, function() { multiresDraw(false); });
         }
         
         if (params.returnImage !== undefined) {
@@ -1204,7 +1241,7 @@ function Renderer(container, context) {
                 for (var i = 0; i < 4; i++) {
                     var j = (i + 1) % 4;
                     if (cornersInView[i] || cornersInView[j]) {
-                        var diffX = (cornersWinX[j] - cornersWinX[i]) * gl.drawingBufferWidth / 2,
+                        var diffX = (cornersWinX[j] - cornersWinX[i]) * program.tileViewWidth / 2,
                             diffY = (cornersWinY[j] - cornersWinY[i]) * gl.drawingBufferHeight / 2;
                         // Handle edge tiles
                         if (lastTileSize < image.tileResolution) {
@@ -1466,7 +1503,7 @@ function Renderer(container, context) {
      * @returns {Float32Array} Generated perspective matrix.
      */
     function makePersp(hfov, aspect, znear, zfar) {
-        var fovy = 2 * Math.atan(Math.tan(hfov/2) * gl.drawingBufferHeight / gl.drawingBufferWidth);
+        var fovy = 2 * Math.atan(Math.tan(hfov/2) / aspect);
         var f = 1 / Math.tan(fovy/2);
         return new Float32Array([
             f/aspect,   0,  0,  0,
@@ -1903,6 +1940,7 @@ var fragEquiCubeBase = [
 'precision highp float;', // mediump looks bad on some mobile devices
 
 'uniform float u_aspectRatio;',
+'uniform float u_center;',
 'uniform float u_psi;',
 'uniform float u_theta;',
 'uniform float u_f;',
@@ -1927,7 +1965,7 @@ var fragEquiCubeBase = [
 
 'void main() {',
     // Map canvas/camera to sphere
-    'float x = v_texCoord.x * u_aspectRatio;',
+    'float x = (v_texCoord.x - u_center) * u_aspectRatio;',
     'float y = v_texCoord.y;',
     'float sinrot = sin(u_rot);',
     'float cosrot = cos(u_rot);',
