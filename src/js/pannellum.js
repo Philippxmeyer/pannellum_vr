@@ -105,6 +105,9 @@ var defaultConfig = {
     autoLoad: false,
     showControls: true,
     orientationOnByDefault: false,
+    vrMode: false,
+    vrOffset: 0,
+    showVRCtrl: false,
     hotSpotDebug: false,
     backgroundColor: [0, 0, 0],
     avoidShowingBackground: false,
@@ -126,6 +129,8 @@ defaultConfig.strings = {
     // Labels
     loadButtonLabel: 'Click to<br>Load<br>Panorama',
     loadingLabel: 'Loading...',
+    vrButtonLabel: 'VR',
+    vrExitButtonLabel: 'Exit VR',
     bylineLabel: 'by %s',    // One substitution: author
 
     // Errors
@@ -287,6 +292,33 @@ if (window.DeviceOrientationEvent && location.protocol == 'https:' &&
     // permission prompt to access such events, this is no longer possible.
     controls.container.appendChild(controls.orientation);
     orientationSupport = true;
+}
+
+// A real button remains accessible while the other controls are hidden.
+controls.vr = document.createElement('button');
+controls.vr.type = 'button';
+controls.vr.className = 'pnlm-vr-button pnlm-controls pnlm-control';
+controls.vr.addEventListener('click', function() {
+    var entering = !config.vrMode;
+    _this.setVRMode(entering);
+    if (config.vrMode === entering && (entering ? !fullscreenActive : fullscreenActive))
+        toggleFullscreen();
+});
+['mousedown', 'touchstart', 'pointerdown'].forEach(function(name) {
+    controls.vr.addEventListener(name, function(e) { e.stopPropagation(); });
+});
+uiContainer.appendChild(controls.vr);
+container.addEventListener('keydown', onVRKeyDown);
+function onVRKeyDown(e) {
+    if (e.key === 'Escape' && config.vrMode)
+        _this.setVRMode(false);
+}
+
+function updateVRControl() {
+    container.classList.toggle('pnlm-vr-mode', !!config.vrMode);
+    controls.vr.textContent = config.vrMode ? config.strings.vrExitButtonLabel : config.strings.vrButtonLabel;
+    controls.vr.setAttribute('aria-pressed', String(!!config.vrMode));
+    controls.vr.style.display = config.vrMode || (config.showVRCtrl && config.showControls) ? 'block' : 'none';
 }
 
 // Compass
@@ -1626,7 +1658,7 @@ function render() {
 
         // Ensure the calculated pitch is within min and max allowed
         var vfov = 2 * Math.atan(Math.tan(config.hfov / 180 * Math.PI * 0.5) /
-            (canvas.width / canvas.height)) / Math.PI * 180;
+            (canvas.width / canvas.height / (config.vrMode ? 2 : 1))) / Math.PI * 180;
         var minPitch = config.minPitch + vfov / 2,
             maxPitch = config.maxPitch - vfov / 2;
         var pitchRange = config.maxPitch - config.minPitch;
@@ -1640,7 +1672,7 @@ function render() {
             maxPitch = 90;
         config.pitch = Math.max(minPitch, Math.min(maxPitch, config.pitch));
         
-        renderer.render(config.pitch * Math.PI / 180, config.yaw * Math.PI / 180, config.hfov * Math.PI / 180, {roll: config.roll * Math.PI / 180, dynamic: update});
+        renderer.render(config.pitch * Math.PI / 180, config.yaw * Math.PI / 180, config.hfov * Math.PI / 180, {roll: config.roll * Math.PI / 180, dynamic: update, vrMode: config.vrMode, vrOffset: config.vrOffset});
         if (updateOnce)
             updateOnce = update = false;
         
@@ -1803,6 +1835,9 @@ function renderInit() {
  * @private
  */
 function renderInitCallback() {
+    if (!renderer.supportsVR())
+        config.vrMode = false;
+    updateVRControl();
     // Fade if specified
     if (config.sceneFadeDuration && renderer.fadeImg !== undefined) {
         renderer.fadeImg.style.opacity = 0;
@@ -2185,6 +2220,10 @@ function mergeConfig(sceneId) {
  * @private
  */
 function processOptions(isPreview) {
+    config.vrOffset = Number(config.vrOffset);
+    if (!isFinite(config.vrOffset) || Math.abs(config.vrOffset) > 0.25)
+        config.vrOffset = 0;
+    updateVRControl();
     isPreview = isPreview ? isPreview : false;
 
     // Process preview first so it always loads before the browser hits its
@@ -2333,7 +2372,7 @@ function toggleFullscreen() {
         if (!fullscreenActive) {
             try {
                 if (container.requestFullscreen) {
-                    container.requestFullscreen();
+                    container.requestFullscreen().catch(function() {});
                 } else if (container.mozRequestFullScreen) {
                     container.mozRequestFullScreen();
                 } else if (container.msRequestFullscreen) {
@@ -2370,6 +2409,8 @@ function onFullScreenChange(resize) {
         controls.fullscreen.classList.remove('pnlm-fullscreen-toggle-button-active');
         fullscreenActive = false;
     }
+    if (resize !== 'resize' && !fullscreenActive && config.vrMode)
+        _this.setVRMode(false);
     if (resize !== 'resize')
         fireEvent('fullscreenchange', fullscreenActive);
     // Resize renderer (deal with browser quirks and fixes #155)
@@ -2492,7 +2533,7 @@ function loadScene(sceneId, targetPitch, targetYaw, targetHfov, fadeDone) {
     if (config.sceneFadeDuration && !fadeDone) {
         var data = renderer.render(config.pitch * Math.PI / 180,
             config.yaw * Math.PI / 180, config.hfov * Math.PI / 180,
-            {roll: config.roll * Math.PI / 180, returnImage: 'ImageBitmap'});
+            {roll: config.roll * Math.PI / 180, vrMode: config.vrMode, vrOffset: config.vrOffset, returnImage: 'ImageBitmap'});
         if (data !== undefined) {
             if (data.then)
                 fadeImg = document.createElement('canvas');
@@ -2594,7 +2635,7 @@ function startOrientation() {
                 window.addEventListener('deviceorientation', orientationListener);
                 controls.orientation.classList.add('pnlm-orientation-button-active');
             }
-        });
+        }).catch(function() { /* Permission denied; manual controls remain available. */ });
     } else {
         orientation = 1;
         window.addEventListener('deviceorientation', orientationListener);
@@ -3281,6 +3322,41 @@ this.removeHotSpot = function(hotSpotId, sceneId) {
 };
 
 /**
+ * Enable / disable monoscopic split-screen VR (WebGL only).
+ * @param {boolean} enabled - Whether to enable VR.
+ * @returns {Viewer} this
+ */
+this.setVRMode = function(enabled) {
+    if (enabled && (!loaded || !renderer || !renderer.supportsVR()))
+        return this;
+    config.vrMode = !!enabled;
+    updateVRControl();
+    animateInit();
+    fireEvent('vrmodechange', config.vrMode);
+    return this;
+};
+
+/** @returns {boolean} Whether split-screen VR is enabled. */
+this.isVRMode = function() { return !!config.vrMode; };
+
+/**
+ * Set symmetric optical center offset, in fractions of one eye viewport width.
+ * Positive moves centers outward. Range: -0.25 to 0.25.
+ * @param {number} offset - Center offset.
+ * @returns {Viewer} this
+ */
+this.setVROffset = function(offset) {
+    if (typeof offset !== 'number' || !isFinite(offset) || Math.abs(offset) > 0.25)
+        throw new Error('vrOffset must be a finite number between -0.25 and 0.25');
+    config.vrOffset = offset;
+    animateInit();
+    return this;
+};
+
+/** @returns {number} Optical center offset. */
+this.getVROffset = function() { return config.vrOffset; };
+
+/**
  * This method should be called if the viewer's container is resized.
  * @memberof Viewer
  * @instance
@@ -3393,6 +3469,8 @@ function fireEvent(type) {
  */
 this.destroy = function() {
     destroyed = true;
+    container.removeEventListener('keydown', onVRKeyDown);
+    container.classList.remove('pnlm-vr-mode');
     clearTimeout(autoRotateStart);
 
     if (xhr)
